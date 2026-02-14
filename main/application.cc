@@ -17,6 +17,9 @@
 #include <arpa/inet.h>
 #include <font_awesome.h>
 
+// MODIFICAÇÃO MINHA
+#include <driver/uart.h>
+
 #define TAG "Application"
 
 
@@ -60,6 +63,28 @@ bool Application::SetDeviceState(DeviceState state) {
 
 void Application::Initialize() {
     auto& board = Board::GetInstance();
+
+    uart_config_t uart_config = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+
+    // 2. AS LINHAS QUE FALTAVAM (Instalar e Configurar os Pinos)
+    // Instala o driver na porta UART 2
+    uart_driver_install(UART_NUM_2, 1024 * 2, 0, 0, NULL, 0);
+    
+    // Aplica a configuração que você definiu acima
+    uart_param_config(UART_NUM_2, &uart_config);
+    
+    // Define os pinos físicos.
+    // Vamos tentar os pinos 1 (TX) e 2 (RX) que costumam funcionar bem.
+    // Se der erro de novo, tente voltar para 17 e 16 ou tente 4 e 5.
+    uart_set_pin(UART_NUM_2, 1, 2, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
     SetDeviceState(kDeviceStateStarting);
 
     // Setup the display
@@ -539,6 +564,38 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
+                    const char* conteudo = text->valuestring;
+
+                    // --- LÓGICA DE INTERCEPTAÇÃO ---
+                    if (strstr(conteudo, "Bom") != NULL || strstr(conteudo, "bom") != NULL) {
+                        
+                        ESP_LOGI(TAG, ">>> GATILHO DETECTADO! Executando comando SILENCIOSO.");
+
+                        // 1. Envia o comando físico
+                        const char* comando = "CMD_BOM_DIA\n";
+                        uart_write_bytes(UART_NUM_2, comando, strlen(comando));
+
+                        // 2. MANDA O ROBÔ CALAR A BOCA (Cancela o áudio)
+                        // Agendamos uma tarefa para abortar a fala e voltar ao estado de espera imediatamente
+                        Schedule([this]() {
+                            // Envia sinal para o servidor parar de mandar áudio
+                            AbortSpeaking(kAbortReasonNone); 
+                            // Força o estado para IDLE (Isso faz ele ignorar qualquer áudio que já tenha chegado)
+                            SetDeviceState(kDeviceStateIdle);
+                            
+                            // Opcional: Faz uma carinha feliz na tela para você saber que funcionou
+                            auto display = Board::GetInstance().GetDisplay();
+                            display->SetEmotion("happy");
+                        });
+
+                        // 3. INTERROMPE A FUNÇÃO AQUI (return)
+                        // Isso impede que ele execute as linhas de baixo (que mostram o texto na tela)
+                        return; 
+                    }
+                    // --- FIM DA INTERCEPTAÇÃO ---
+
+
+                    // --- COMPORTAMENTO PADRÃO (Só roda se não entrou no IF acima) ---
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
                     Schedule([display, message = std::string(text->valuestring)]() {
                         display->SetChatMessage("assistant", message.c_str());
